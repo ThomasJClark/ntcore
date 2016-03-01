@@ -128,14 +128,12 @@ public class NetworkTablesJNI {
   public static native int addConnectionListener(ConnectionListenerFunction listener, boolean immediateNotify);
   public static native void removeConnectionListener(int connListenerUid);
 
-  // public static native void createRpc(String key, byte[] def, IRpc rpc);
-  // public static native void createRpc(String key, ByteBuffer def, int def_len, IRpc rpc);
   public static native byte[] getRpc(String key) throws TableKeyNotDefinedException;
   public static native byte[] getRpc(String key, byte[] defaultValue);
+
+  public static native byte[] packRpcValues(Object[] values);
   public static native int callRpc(String key, byte[] params);
   public static native int callRpc(String key, ByteBuffer params, int params_len);
-  // public static native byte[] getRpcResultBlocking(int callUid);
-  // public static native byte[] getRpcResultNonblocking(int callUid) throws RpcNoResponseException;
 
   public static native void setNetworkIdentity(String name);
   public static native void startServer(String persistFilename, String listenAddress, int port);

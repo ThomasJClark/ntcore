@@ -472,6 +472,15 @@ public class NetworkTable implements ITable, IRemote {
   }
 
   /**
+   * TODO: should this be here in this class?  If so, should it also be in
+   * ITable?
+   */
+  public int callRpc(String name, Object... args) {
+      byte[] packed = NetworkTablesJNI.packRpcValues(args);
+      return NetworkTablesJNI.callRpc(path + PATH_SEPARATOR + name, packed);
+  }
+
+  /**
    * {@inheritDoc}
    */
   @Override

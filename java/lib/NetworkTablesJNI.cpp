@@ -21,12 +21,20 @@ static JavaVM *jvm = nullptr;
 static jclass booleanCls = nullptr;
 static jclass doubleCls = nullptr;
 static jclass stringCls = nullptr;
+static jclass numberCls = nullptr;
+static jclass byteArrayCls = nullptr;
+static jclass booleanArrayCls = nullptr;
+static jclass doubleArrayCls = nullptr;
+static jclass stringArrayCls = nullptr;
 static jclass connectionInfoCls = nullptr;
 static jclass entryInfoCls = nullptr;
 static jclass keyNotDefinedEx = nullptr;
 static jclass persistentEx = nullptr;
+static jclass illegalArgumentEx = nullptr;
 // Thread-attached environment for listener callbacks.
 static JNIEnv *listenerEnv = nullptr;
+
+static void ThrowIllegalArgument(JNIEnv *, jstring);
 
 static void ListenerOnStart() {
   if (!jvm) return;
@@ -78,6 +86,36 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
   if (!stringCls) return JNI_ERR;
   env->DeleteLocalRef(local);
 
+  local = env->FindClass("java/lang/Number");
+  if (!local) return JNI_ERR;
+  numberCls = static_cast<jclass>(env->NewGlobalRef(local));
+  if (!numberCls) return JNI_ERR;
+  env->DeleteLocalRef(local);
+
+  local = env->FindClass("[B");
+  if (!local) return JNI_ERR;
+  byteArrayCls = static_cast<jclass>(env->NewGlobalRef(local));
+  if (!byteArrayCls) return JNI_ERR;
+  env->DeleteLocalRef(local);
+
+  local = env->FindClass("[Z");
+  if (!local) return JNI_ERR;
+  booleanArrayCls = static_cast<jclass>(env->NewGlobalRef(local));
+  if (!booleanArrayCls) return JNI_ERR;
+  env->DeleteLocalRef(local);
+
+  local = env->FindClass("[D");
+  if (!local) return JNI_ERR;
+  doubleArrayCls = static_cast<jclass>(env->NewGlobalRef(local));
+  if (!doubleArrayCls) return JNI_ERR;
+  env->DeleteLocalRef(local);
+
+  local = env->FindClass("[Ljava/lang/String;");
+  if (!local) return JNI_ERR;
+  stringArrayCls = static_cast<jclass>(env->NewGlobalRef(local));
+  if (!stringArrayCls) return JNI_ERR;
+  env->DeleteLocalRef(local);
+
   local = env->FindClass("edu/wpi/first/wpilibj/networktables/ConnectionInfo");
   if (!local) return JNI_ERR;
   connectionInfoCls = static_cast<jclass>(env->NewGlobalRef(local));
@@ -102,6 +140,12 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
   if (!persistentEx) return JNI_ERR;
   env->DeleteLocalRef(local);
 
+  local =
+      env->FindClass("java/lang/IllegalArgumentException");
+  illegalArgumentEx = static_cast<jclass>(env->NewGlobalRef(local));
+  if (!illegalArgumentEx) return JNI_ERR;
+  env->DeleteLocalRef(local);
+
   // Initial configuration of listener start/exit
   nt::SetListenerOnStart(ListenerOnStart);
   nt::SetListenerOnExit(ListenerOnExit);
@@ -121,6 +165,12 @@ JNIEXPORT void JNICALL JNI_OnUnload(JavaVM *vm, void *reserved) {
   if (entryInfoCls) env->DeleteGlobalRef(entryInfoCls);
   if (keyNotDefinedEx) env->DeleteGlobalRef(keyNotDefinedEx);
   if (persistentEx) env->DeleteGlobalRef(persistentEx);
+  if (illegalArgumentEx) env->DeleteGlobalRef(illegalArgumentEx);
+  if (numberCls) env->DeleteGlobalRef(numberCls);
+  if (byteArrayCls) env->DeleteGlobalRef(byteArrayCls);
+  if (booleanArrayCls) env->DeleteGlobalRef(booleanArrayCls);
+  if (doubleArrayCls) env->DeleteGlobalRef(doubleArrayCls);
+  if (stringArrayCls) env->DeleteGlobalRef(stringArrayCls);
   jvm = nullptr;
 }
 
@@ -331,6 +381,41 @@ std::shared_ptr<nt::Value> FromJavaStringArray(JNIEnv *env, jobjectArray jarr) {
   return nt::Value::MakeStringArray(std::move(arr));
 }
 
+std::shared_ptr<nt::Value> FromJavaObject(JNIEnv *env, jobject jobj) {
+  static jmethodID booleanValue = nullptr;
+  static jmethodID doubleValue = nullptr;
+  if (!booleanValue)
+    booleanValue = env->GetMethodID(booleanCls, "booleanValue", "()Z");
+  if (!doubleValue)
+    doubleValue = env->GetMethodID(numberCls, "doubleValue", "()D");
+
+  if (env->IsInstanceOf(jobj, booleanCls)) {
+    return nt::Value::MakeBoolean(env->CallBooleanMethod(jobj, booleanValue));
+  } else if (env->IsInstanceOf(jobj, numberCls)) {
+    return nt::Value::MakeDouble(env->CallDoubleMethod(jobj, doubleValue));
+  } else if (env->IsInstanceOf(jobj, stringCls)) {
+    return nt::Value::MakeString(JavaStringRef(env, (jstring) jobj));
+  } else if (env->IsInstanceOf(jobj, byteArrayCls)) {
+    return FromJavaRaw(env, (jbyteArray) jobj);
+  }  else if (env->IsInstanceOf(jobj, booleanArrayCls)) {
+    return FromJavaBooleanArray(env, (jbooleanArray) jobj);
+  } else if (env->IsInstanceOf(jobj, doubleArrayCls)) {
+    return FromJavaDoubleArray(env, (jdoubleArray) jobj);
+  } else if (env->IsInstanceOf(jobj, stringArrayCls)) {
+    return FromJavaStringArray(env, (jobjectArray) jobj);
+  }
+
+  // Any type besides the above cannot be converted to an nt::Value.  Throw an
+  // IllegalArgumentException with the class name.
+  jmethodID getName = env->GetMethodID(
+      env->FindClass("java/lang/Class"), "getName", "()Ljava/lang/String;");
+  jstring clsName = (jstring) env->CallObjectMethod(
+      env->GetObjectClass(jobj), getName);
+  ThrowIllegalArgument(env, clsName);
+
+  return nullptr;
+}
+
 //
 // Conversions from C++ to Java objects
 //
@@ -444,6 +529,15 @@ static void ThrowTableKeyNotDefined(JNIEnv *env, jstring key) {
     constructor =
         env->GetMethodID(keyNotDefinedEx, "<init>", "(Ljava/lang/String;)V");
   jobject exception = env->NewObject(keyNotDefinedEx, constructor, key);
+  env->Throw(static_cast<jthrowable>(exception));
+}
+
+static void ThrowIllegalArgument(JNIEnv *env, jstring message) {
+  static jmethodID constructor = nullptr;
+  if (!constructor)
+    constructor =
+        env->GetMethodID(illegalArgumentEx, "<init>", "(Ljava/lang/String;)V");
+  jobject exception = env->NewObject(illegalArgumentEx, constructor, message);
   env->Throw(static_cast<jthrowable>(exception));
 }
 
@@ -1131,6 +1225,28 @@ JNIEXPORT jbyteArray JNICALL Java_edu_wpi_first_wpilibj_networktables_NetworkTab
   auto val = nt::GetEntryValue(JavaStringRef(env, key));
   if (!val || !val->IsRpc()) return defaultValue;
   return ToJavaByteArray(env, val->GetRpc());
+}
+
+/*
+ * Class:     edu_wpi_first_wpilibj_networktables_NetworkTablesJNI
+ * Method:    packRpcValues
+ * Signature: ([Ljava/lang/Object;)[B
+ */
+JNIEXPORT jbyteArray JNICALL Java_edu_wpi_first_wpilibj_networktables_NetworkTablesJNI_packRpcValues
+  (JNIEnv *env, jclass, jobjectArray params)
+{
+  std::vector<std::shared_ptr<nt::Value>> values;
+
+  for (size_t i = 0, len = env->GetArrayLength(params); i < len; i++) {
+    jobject jobj = env->GetObjectArrayElement(params, i);
+    auto value = FromJavaObject(env, jobj);
+    if (!value) {
+      return nullptr;
+    }
+    values.push_back(value);
+  }
+
+  return ToJavaByteArray(env, nt::PackRpcValues(values));
 }
 
 /*
